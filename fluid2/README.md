@@ -1,5 +1,7 @@
 # Fluid Observatory
 
+<img width="1426" height="989" alt="image" src="https://github.com/user-attachments/assets/a977870f-0e51-45e1-982d-a975dead170c" />
+
 A native Rust laboratory for classical and special-relativistic fluid motion. Explore a relativistic jet, a spherical explosion, Kelvin–Helmholtz shear, and a shock tube in a live, orbitable 3D volume.
 
 The simulation evolves **three-dimensional compressible ideal-gas hydrodynamics**. The relativistic mode conserves rest mass and energy–momentum in flat spacetime. It is an educational numerical simulation with explicit assumptions and validation, not a general-relativistic or liquid-water solver.
