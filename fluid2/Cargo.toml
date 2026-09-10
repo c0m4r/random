@@ -1,0 +1,21 @@
+[package]
+name = "fluid-observatory"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "An interactive 3D laboratory for Newtonian and special-relativistic fluids"
+license = "MIT"
+
+[dependencies]
+eframe = { version = "=0.36.1", default-features = false, features = ["glow", "default_fonts", "x11", "wayland"] }
+bytemuck = "1.25"
+glam = "0.33"
+png = "0.18"
+
+[profile.dev]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
