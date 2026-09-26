@@ -1,0 +1,94 @@
+#version 450
+// room2 - screen-space ambient occlusion. Hemisphere sampling in view space against
+// the depth buffer, evaluated at half resolution.
+#include "common.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 2, binding = 0) uniform sampler2D uDepth;
+layout(set = 2, binding = 1) uniform sampler2D uNormal;
+layout(set = 2, binding = 4) uniform sampler2D uEmissive;   // alpha = linear view depth
+layout(set = 2, binding = 2) uniform sampler2D uNoise;
+layout(set = 2, binding = 3, r16f) uniform image2D uOutAo;
+
+const int kSampleCount = 16;
+
+// A fixed cosine-ish distribution; rotated per pixel by a hash so the low sample
+// count turns into noise that the bilateral blur then removes.
+const vec3 kKernel[16] = vec3[](
+    vec3( 0.20236,  0.07821,  0.97618), vec3(-0.40123,  0.32908,  0.85455),
+    vec3( 0.55472, -0.28114,  0.78343), vec3(-0.21118, -0.59327,  0.77680),
+    vec3( 0.70214,  0.44120,  0.55817), vec3(-0.71114, -0.10342,  0.69524),
+    vec3( 0.11043,  0.81229,  0.57258), vec3(-0.10326, -0.87224,  0.47852),
+    vec3( 0.86317, -0.31024,  0.39844), vec3(-0.54391,  0.71192,  0.44328),
+    vec3( 0.31707,  0.30702,  0.89705), vec3(-0.90543, -0.39217,  0.15813),
+    vec3( 0.24493, -0.94663,  0.21183), vec3( 0.96042,  0.15127,  0.23445),
+    vec3(-0.31911,  0.14049,  0.93738), vec3( 0.01751, -0.22648,  0.97387));
+
+// Rebuilds the view-space position from the stored linear view depth.
+vec3 viewPosFromDepth(vec2 uv, float viewDepth) {
+    vec3 world = r2_worldFromDepth(uv, viewDepth);
+    return (g.view * vec4(world, 1.0)).xyz;
+}
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(uOutAo);
+    if (px.x >= size.x || px.y >= size.y) return;
+
+    vec2 uv = (vec2(px) + 0.5) / vec2(size);
+    float depth = texture(uDepth, uv).r;
+    if (depth >= 1.0) {
+        imageStore(uOutAo, px, vec4(1.0));
+        return;
+    }
+
+    float viewDepth = texture(uEmissive, uv).a;
+    vec3 viewPos = viewPosFromDepth(uv, viewDepth);
+    vec3 N = normalize(texture(uNormal, uv).xyz * 2.0 - 1.0);
+
+    // Radius scaled with distance so the effect stays screen-relative.
+    float dist = -viewPos.z;
+    float radius = clamp(dist * 0.06, 0.06, 0.9);
+    float bias = 0.015 + dist * 0.0009;
+
+    // Per-pixel rotation from a hash plus a temporal offset.
+    float angle = r2_hash12(vec2(px) + g.misc.y * 13.37) * 6.2831853;
+    float s = sin(angle), c = cos(angle);
+    mat3 rot = mat3(vec3(c, s, 0.0), vec3(-s, c, 0.0), vec3(0.0, 0.0, 1.0));
+
+    // Build a view-space basis aligned with the normal.
+    vec3 up = abs(N.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    vec3 T = normalize(cross(up, N));
+    vec3 B = cross(N, T);
+    mat3 basis = mat3(T, B, N);
+
+    float occlusion = 0.0;
+    float valid = 0.0;
+    for (int i = 0; i < kSampleCount; ++i) {
+        vec3 dir = basis * (rot * kKernel[i]);
+        vec3 samplePos = viewPos + dir * radius;
+        vec4 offset = g.projection * vec4(samplePos, 1.0);
+        if (offset.w <= 0.0) continue;
+        vec2 sampleUv = (offset.xy / offset.w) * 0.5 + 0.5;
+        if (sampleUv.x < 0.0 || sampleUv.x > 1.0 || sampleUv.y < 0.0 || sampleUv.y > 1.0) continue;
+
+        float sampleDepth = textureLod(uDepth, sampleUv, 0.0).r;
+        if (sampleDepth >= 1.0) {
+            valid += 1.0;
+            continue;   // background: fully open
+        }
+        vec3 sampleView = viewPosFromDepth(sampleUv, texture(uEmissive, sampleUv).a);
+        float sampleZ = -sampleView.z;
+        float expectedZ = -samplePos.z;
+        // Occluded when the stored surface is closer to the camera than the sample.
+        float rangeCheck = smoothstep(0.0, 1.0, radius / max(abs(sampleZ - dist), 1e-4));
+        float occluded = (sampleZ < expectedZ - bias) ? 1.0 : 0.0;
+        occlusion += occluded * rangeCheck;
+        valid += 1.0;
+    }
+
+    float ao = valid > 0.0 ? 1.0 - occlusion / valid : 1.0;
+    ao = clamp(ao, 0.0, 1.0);
+    imageStore(uOutAo, px, vec4(ao));
+}

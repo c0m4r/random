@@ -1,0 +1,116 @@
+#version 450
+// room2 - procedural environment probe.
+//
+// The room is an axis-aligned box with one emissive lamp and known surface albedos,
+// so its radiance field can be evaluated analytically. For each cube face texel we
+// intersect the view ray with the room box, shade the hit point with the lamp plus an
+// approximate multi-bounce term, and - for rougher mips - average many such rays with
+// a GGX distribution. The result is a small, cheap, but physically motivated probe
+// that gives glass and gunmetal believable reflections without shipping an HDRI.
+#include "common.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 2, binding = 0, rgba16f) uniform image2DArray uProbe;
+
+layout(push_constant) uniform ProbePush {
+    vec4 roomMin;             // xyz = box minimum
+    vec4 roomMax;             // xyz = box maximum
+    vec4 lightPosIntensity;   // xyz = lamp position, w = intensity
+    vec4 lightColor;          // rgb = lamp colour, a = roughness for this mip
+    vec4 bounce;              // rgb = multi-bounce ambient, a = bounce strength
+    uvec4 params;             // x = mip level, y = cube face size, z = sample count, w = face index
+} pc;
+
+const float kPi = 3.141592653589793;
+
+// Intersects a ray that starts inside the box with the box's inner surface.
+bool intersectRoomBox(vec3 origin, vec3 dir, out vec3 hitPos, out vec3 normal) {
+    vec3 invDir = 1.0 / dir;
+    vec3 t1 = (pc.roomMin.xyz - origin) * invDir;
+    vec3 t2 = (pc.roomMax.xyz - origin) * invDir;
+    vec3 tFar = max(t1, t2);
+    float t = min(min(tFar.x, tFar.y), tFar.z);
+    if (t <= 0.0 || t > 1000.0) return false;
+    hitPos = origin + dir * t;
+    // The inward normal of whichever face the ray exits through.
+    if (t == tFar.x) normal = vec3(dir.x > 0.0 ? -1.0 : 1.0, 0.0, 0.0);
+    else if (t == tFar.y) normal = vec3(0.0, dir.y > 0.0 ? -1.0 : 1.0, 0.0);
+    else normal = vec3(0.0, 0.0, dir.z > 0.0 ? -1.0 : 1.0);
+    return true;
+}
+
+// Surface reflectance of the room shell at a hit point.
+vec3 roomAlbedo(vec3 p, vec3 n) {
+    if (n.y > 0.5) return vec3(0.16, 0.10, 0.06);          // floor: dark wood
+    if (n.y < -0.5) return vec3(0.74, 0.73, 0.70);         // ceiling: white plaster
+    return vec3(0.70, 0.68, 0.64);                          // walls: warm plaster
+}
+
+// Outgoing radiance from the room surface seen along `-dir` from `origin`.
+vec3 roomRadiance(vec3 origin, vec3 dir) {
+    vec3 p, n;
+    if (!intersectRoomBox(origin, dir, p, n)) return vec3(0.0);
+
+    vec3 albedo = roomAlbedo(p, n);
+    vec3 toLight = pc.lightPosIntensity.xyz - p;
+    float dist2 = max(dot(toLight, toLight), 0.02);
+    vec3 L = toLight * inversesqrt(dist2);
+    float NdotL = max(dot(n, L), 0.0);
+
+    // Inverse-square falloff with a small source radius so the lamp reads as an area
+    // light rather than a mathematical point.
+    float radius = 0.10;
+    float atten = 1.0 / max(dist2, radius * radius * 4.0);
+    vec3 direct = pc.lightColor.rgb * pc.lightPosIntensity.w * atten * NdotL;
+
+    // Very cheap one-bounce approximation: surfaces also see the average room
+    // radiance, weighted by how much of the hemisphere they can see.
+    vec3 ambient = pc.bounce.rgb * pc.bounce.a * (0.5 + 0.5 * n.y);
+
+    return albedo * (direct + ambient) / kPi;
+}
+
+vec3 sampleProbe(vec3 dir, float roughness) {
+    if (roughness < 0.02) {
+        return roomRadiance(vec3(0.0), normalize(dir));
+    }
+    // GGX importance sampling of the analytic radiance field.
+    vec3 N = normalize(dir);
+    float r = max(roughness, 0.02);
+    vec3 sum = vec3(0.0);
+    float weight = 0.0;
+    uint count = clamp(pc.params.z, 1u, 256u);
+    for (uint i = 0u; i < count; ++i) {
+        vec2 xi = vec2(float(i) / float(count),
+                       fract(float(i) * 0.6180339887 + 0.5));
+        vec3 H = r2_importanceSampleGGX(xi, N, r);
+        vec3 L = reflect(-N, H);
+        float NdotL = dot(N, L);
+        if (NdotL <= 0.0) continue;
+        sum += roomRadiance(vec3(0.0), normalize(L)) * NdotL;
+        weight += NdotL;
+    }
+    return weight > 0.0 ? sum / weight : roomRadiance(vec3(0.0), N);
+}
+
+void main() {
+    ivec3 texel = ivec3(gl_GlobalInvocationID.xyz);
+    uint faceSize = pc.params.y;
+    uint face = pc.params.w;
+    if (texel.x >= int(faceSize) || texel.y >= int(faceSize) || face > 5u) return;
+
+    vec2 uv = (vec2(texel.xy) + 0.5) / float(faceSize) * 2.0 - 1.0;
+    vec3 dir;
+    switch (face) {
+        case 0u: dir = vec3( 1.0, -uv.y, -uv.x); break;
+        case 1u: dir = vec3(-1.0, -uv.y,  uv.x); break;
+        case 2u: dir = vec3( uv.x,  1.0,  uv.y); break;
+        case 3u: dir = vec3( uv.x, -1.0, -uv.y); break;
+        case 4u: dir = vec3( uv.x, -uv.y,  1.0); break;
+        default: dir = vec3(-uv.x, -uv.y, -1.0); break;
+    }
+    float roughness = pc.lightColor.a;
+    vec3 radiance = sampleProbe(normalize(dir), roughness);
+    imageStore(uProbe, texel, vec4(radiance, 1.0));
+}

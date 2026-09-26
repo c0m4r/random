@@ -1,0 +1,48 @@
+#version 450
+// room2 - depth-aware bilateral blur for the half-resolution AO buffer. Removes the
+// sampling noise while preserving contact shadows.
+#include "common.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 2, binding = 0) uniform sampler2D uDepth;
+layout(set = 2, binding = 1) uniform sampler2D uAoIn;
+layout(set = 2, binding = 3) uniform sampler2D uEmissive;   // alpha = linear view depth
+layout(set = 2, binding = 2, r16f) uniform image2D uAoOut;
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(uAoOut);
+    if (px.x >= size.x || px.y >= size.y) return;
+
+    vec2 uv = (vec2(px) + 0.5) / vec2(size);
+    vec2 texel = 1.0 / vec2(size);
+    float centerDepth = texture(uDepth, uv).r;
+
+    if (centerDepth >= 1.0) {
+        imageStore(uAoOut, px, vec4(1.0));
+        return;
+    }
+    float centerLinear = texture(uEmissive, uv).a;
+
+    float sum = 0.0;
+    float weightSum = 0.0;
+    const int R = 2;
+    for (int dy = -R; dy <= R; ++dy) {
+        for (int dx = -R; dx <= R; ++dx) {
+            vec2 o = vec2(dx, dy) * texel;
+            float d = texture(uDepth, uv + o).r;
+            float ao = texture(uAoIn, uv + o).r;
+            // Background texels get an effectively infinite depth so their weight vanishes.
+            float linearD = d >= 1.0 ? 1e6 : texture(uEmissive, uv + o).a;
+            // Spatial + depth weight.
+            float spatial = exp(-float(dx * dx + dy * dy) * 0.35);
+            float depthW = exp(-abs(linearD - centerLinear) * 24.0);
+            float w = spatial * depthW;
+            sum += ao * w;
+            weightSum += w;
+        }
+    }
+    float ao = weightSum > 0.0 ? sum / weightSum : 1.0;
+    imageStore(uAoOut, px, vec4(ao));
+}

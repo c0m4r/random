@@ -1,0 +1,48 @@
+# ---------------------------------------------------------------- build output
+build/
+build-*/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+compile_commands.json
+.ninja_deps
+.ninja_log
+*.ninja
+Makefile
+
+# Compiled objects / libraries / binaries
+*.o
+*.obj
+*.a
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.pdb
+*.ilk
+*.spv
+
+# Runtime-generated files
+# The pipeline cache is written next to the working directory on exit.
+room2_pipeline_cache.bin
+*.log
+
+# ---------------------------------------------------------------- vendored verification tools
+# .tools/ holds the software Vulkan driver (Mesa lavapipe) and the Khronos validation
+# layers, downloaded locally so the renderer can be verified on a machine with no GPU.
+# They are large third-party binaries and must not be committed; the README explains
+# how to fetch them.
+.tools/*
+!.tools/README.md
+
+# ---------------------------------------------------------------- editor / OS noise
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

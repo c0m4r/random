@@ -1,0 +1,38 @@
+#version 450
+// room2 - bloom downsample (13-tap Call of Duty style filter).
+#include "common.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 2, binding = 0) uniform sampler2D uSource;
+layout(set = 2, binding = 1, rgba16f) uniform image2D uDest;
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(uDest);
+    if (px.x >= size.x || px.y >= size.y) return;
+
+    vec2 srcSize = vec2(textureSize(uSource, 0));
+    vec2 uv = (vec2(px) + 0.5) / vec2(size);
+    vec2 t = 1.0 / srcSize;
+
+    vec3 a = texture(uSource, uv + t * vec2(-2.0,  2.0)).rgb;
+    vec3 b = texture(uSource, uv + t * vec2( 0.0,  2.0)).rgb;
+    vec3 c = texture(uSource, uv + t * vec2( 2.0,  2.0)).rgb;
+    vec3 d = texture(uSource, uv + t * vec2(-2.0,  0.0)).rgb;
+    vec3 e = texture(uSource, uv).rgb;
+    vec3 f = texture(uSource, uv + t * vec2( 2.0,  0.0)).rgb;
+    vec3 g = texture(uSource, uv + t * vec2(-2.0, -2.0)).rgb;
+    vec3 h = texture(uSource, uv + t * vec2( 0.0, -2.0)).rgb;
+    vec3 i = texture(uSource, uv + t * vec2( 2.0, -2.0)).rgb;
+    vec3 j = texture(uSource, uv + t * vec2(-1.0,  1.0)).rgb;
+    vec3 k = texture(uSource, uv + t * vec2( 1.0,  1.0)).rgb;
+    vec3 l = texture(uSource, uv + t * vec2(-1.0, -1.0)).rgb;
+    vec3 m = texture(uSource, uv + t * vec2( 1.0, -1.0)).rgb;
+
+    vec3 result = e * 0.125;
+    result += (a + c + g + i) * 0.03125;
+    result += (b + d + f + h) * 0.0625;
+    result += (j + k + l + m) * 0.125;
+    imageStore(uDest, px, vec4(result, 1.0));
+}

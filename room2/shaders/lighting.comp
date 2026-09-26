@@ -1,0 +1,212 @@
+#version 450
+// room2 - deferred lighting pass. Reconstructs the surface from the G-buffer, adds
+// direct lighting with soft cube-map shadows plus an analytic room ambient term, and
+// evaluates a rough specular reflection from the procedural environment probe.
+#include "common.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 2, binding = 0) uniform sampler2D uAlbedoAo;
+layout(set = 2, binding = 1) uniform sampler2D uNormalRough;
+layout(set = 2, binding = 2) uniform sampler2D uMetalKind;
+layout(set = 2, binding = 3) uniform sampler2D uEmissive;
+layout(set = 2, binding = 4) uniform sampler2D uDepth;
+layout(set = 2, binding = 5) uniform sampler2D uAmbientOcclusion;
+layout(set = 2, binding = 7) uniform samplerCube uEnvCube;
+layout(set = 2, binding = 8, rgba16f) uniform image2D uOutColor;
+layout(set = 2, binding = 9) uniform samplerCube uShadowRaw;
+
+// ---------------------------------------------------------------- shadow sampling
+// A single 2D perspective (spot) shadow map: project the receiver into the light's clip
+// space and compare depths. No cube-map face conventions are involved.
+layout(set = 2, binding = 6) uniform sampler2DArray uShadowMaps;
+
+float sampleShadowMap(uint layer, vec2 uv, float refDepth) {
+    vec2 texel = g.shadowParams.zz;
+    const vec2 kPoisson[12] = vec2[](
+        vec2(-0.326, -0.406), vec2(-0.840, -0.074), vec2(-0.696,  0.457),
+        vec2(-0.203,  0.621), vec2( 0.962, -0.195), vec2( 0.473, -0.480),
+        vec2( 0.519,  0.767), vec2( 0.185, -0.893), vec2( 0.507,  0.064),
+        vec2( 0.896,  0.412), vec2(-0.322, -0.933), vec2(-0.792, -0.598));
+    // A comparison sampler returns 1.0 when the receiver is lit.
+    float sum = texture(uShadowMaps, vec3(uv, float(layer))).r < refDepth ? 0.0 : 1.0;
+    for (int i = 0; i < 12; ++i) {
+        vec2 o = kPoisson[i] * texel * 2.4;
+        float d = texture(uShadowMaps, vec3(uv + o, float(layer))).r;
+        sum += d < refDepth ? 0.0 : 1.0;
+    }
+    return sum / 13.0;
+}
+
+float evaluateShadow(GpuLight light, vec3 worldPos, vec3 N) {
+    if (light.shadowParams.w <= 0.0) return 1.0;
+    uint layer = uint(light.shadowParams.w + 0.5) - 1u;
+    vec4 clip = light.shadowViewProj[0] * vec4(worldPos, 1.0);
+    if (clip.w <= 1e-5) return 1.0;
+    vec3 ndc = clip.xyz / clip.w;
+    vec2 uv = ndc.xy * 0.5 + 0.5;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 1.0;
+    if (ndc.z <= 0.0 || ndc.z >= 1.0) return 1.0;
+
+    // Slope-scaled bias, expressed in the shadow map's depth units.
+    vec3 toFrag = worldPos - light.positionRange.xyz;
+    float dist = length(toFrag);
+    vec3 dir = dist > 1e-5 ? toFrag / dist : vec3(0.0, -1.0, 0.0);
+    float slope = clamp(1.0 - dot(N, -dir), 0.0, 1.0);
+    float bias = g.shadowParams.w * (1.0 + 2.0 * slope) * (1.0 + dist * 0.35);
+    return sampleShadowMap(layer, uv, ndc.z - bias);
+}
+
+// ---------------------------------------------------------------- main
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(uOutColor);
+    if (px.x >= size.x || px.y >= size.y) return;
+
+    vec2 uv = (vec2(px) + 0.5) / vec2(size);
+    float depth = texture(uDepth, uv).r;
+
+    if (depth >= 1.0) {
+        imageStore(uOutColor, px, vec4(0.0, 0.0, 0.0, 1.0));
+        return;
+    }
+
+    vec4 albedoAo = texture(uAlbedoAo, uv);
+    vec4 normalRough = texture(uNormalRough, uv);
+    vec4 metalKind = texture(uMetalKind, uv);
+    vec3 emissive = texture(uEmissive, uv).rgb;
+
+    vec3 albedo = albedoAo.rgb;
+    float ao = albedoAo.a;
+    vec3 N = normalize(normalRough.xyz * 2.0 - 1.0);
+    float roughness = clamp(normalRough.a, 0.02, 1.0);
+    float metallic = metalKind.r;
+
+    // Alpha of the emissive target carries the linear view depth.
+    float viewDepth = texture(uEmissive, uv).a;
+    vec3 worldPos = r2_worldFromDepth(uv, viewDepth);
+    vec3 V = normalize(g.cameraPosition.xyz - worldPos);
+    if (dot(N, V) < 0.0) N = -N;   // keep shading one-sided for thin geometry
+
+    float ssao = texture(uAmbientOcclusion, uv).r;
+    ao *= mix(1.0, ssao, clamp(g.postParams.x, 0.0, 1.0));
+
+    vec3 f0 = mix(vec3(0.04), albedo, metallic);
+    vec3 diffuseAlbedo = albedo * (1.0 - metallic);
+
+    vec3 direct = vec3(0.0);
+    uint lightCount = uint(g.misc.z + 0.5);
+    for (uint i = 0u; i < lightCount && i < 8u; ++i) {
+        GpuLight light = lights[i];
+        vec3 toLight = light.positionRange.xyz - worldPos;
+        float dist = length(toLight);
+        if (dist > light.positionRange.w) continue;
+        vec3 L = toLight / max(dist, 1e-5);
+
+        float shadow = evaluateShadow(light, worldPos, N);
+        if (shadow <= 0.0) continue;
+
+        // Inverse-square falloff with a smooth window at the light's range.
+        float range = light.positionRange.w;
+        float window = clamp(1.0 - pow(dist / range, 4.0), 0.0, 1.0);
+        window *= window;
+        // Area-light softening: the emissive sphere radius reduces the effective
+        // intensity falloff denominator, which reads as a soft bulb.
+        float radius = max(light.directionRadius.w, 1e-4);
+        float denom = max(dist * dist, radius * radius * 4.0);
+        vec3 radiance = light.colorIntensity.rgb * light.colorIntensity.a * window / denom;
+
+        // Spot cone attenuation.
+        if (light.shadowParams.z > 0.5 && light.shadowParams.z < 1.5) {
+            float cd = dot(normalize(-L), normalize(light.directionRadius.xyz));
+            float spot = smoothstep(light.shadowParams.y, light.shadowParams.x, cd);
+            radiance *= spot;
+            if (spot <= 0.0) continue;
+        }
+
+        direct += r2_brdf(N, V, L, diffuseAlbedo, metallic, roughness, f0) * radiance * shadow;
+    }
+
+    // ---- ambient: analytic room bounce + environment specular ----------------
+    vec3 ambientDiffuse = r2_roomAmbient(N, ao) * diffuseAlbedo;
+
+    // Specular ambient from the procedural room probe, split-sum approximated.
+    vec3 R = reflect(-V, N);
+    float NdotV = clamp(dot(N, V), 1e-4, 1.0);
+    float maxMip = 5.0;
+    float lod = sqrt(roughness) * maxMip;
+    vec3 envSpec = textureLod(uEnvCube, R, lod).rgb;
+    vec2 envBrdf = r2_envBrdfApprox(NdotV, roughness);
+    vec3 specularAmbient = envSpec * (f0 * envBrdf.x + envBrdf.y) * mix(1.0, ao, 0.7);
+
+    // Diffuse ambient also picks up a trace of the environment for accuracy.
+    vec3 envDiff = textureLod(uEnvCube, N, maxMip).rgb;
+    vec3 color = direct + ambientDiffuse + specularAmbient + envDiff * diffuseAlbedo * 0.35 * ao;
+
+    color += emissive;
+
+#if defined(R2_LIGHT_DEBUG)
+    // Diagnostic visualisations used by --dump-targets.
+#if R2_LIGHT_DEBUG == 1
+    imageStore(uOutColor, px, vec4(vec3(ao), 1.0)); return;
+#elif R2_LIGHT_DEBUG == 2
+    imageStore(uOutColor, px, vec4(direct, 1.0)); return;
+#elif R2_LIGHT_DEBUG == 3
+    imageStore(uOutColor, px, vec4(ambientDiffuse, 1.0)); return;
+#elif R2_LIGHT_DEBUG == 4
+    imageStore(uOutColor, px, vec4(N * 0.5 + 0.5, 1.0)); return;
+#elif R2_LIGHT_DEBUG == 5
+    imageStore(uOutColor, px, vec4(specularAmbient, 1.0)); return;
+#elif R2_LIGHT_DEBUG == 6
+    imageStore(uOutColor, px, vec4(texture(uAlbedoAo, uv).rgb, 1.0)); return;
+#elif R2_LIGHT_DEBUG == 7
+    imageStore(uOutColor, px, vec4(ssao, 0.0, 0.0, 1.0)); return;
+#elif R2_LIGHT_DEBUG == 8
+    {
+        float sh = 1.0;
+        if (uint(g.misc.z + 0.5) > 0u) sh = evaluateShadow(lights[0], worldPos, N);
+        imageStore(uOutColor, px, vec4(vec3(sh), 1.0));
+        return;
+    }
+#elif R2_LIGHT_DEBUG == 11
+    {
+        GpuLight light = lights[0];
+        vec3 toFrag = worldPos - light.positionRange.xyz;
+        float dist = length(toFrag);
+        vec3 dir = dist > 1e-5 ? toFrag / dist : vec3(0.0, -1.0, 0.0);
+        float nearPlane = light.shadowNearFar.x;
+        float farPlane = light.shadowNearFar.y;
+        float refDepth = farPlane / (farPlane - nearPlane) * (1.0 - nearPlane / max(dist, nearPlane));
+        float stored = texture(uShadowRaw, dir).r;
+        // Red = reference, green = stored, blue = difference amplified.
+        imageStore(uOutColor, px, vec4(refDepth, stored, 0.5 + (stored - refDepth) * 50.0, 1.0));
+        return;
+    }
+#elif R2_LIGHT_DEBUG == 9
+    imageStore(uOutColor, px, vec4(vec3(length(worldPos - g.cameraPosition.xyz) / 10.0), 1.0));
+    return;
+#elif R2_LIGHT_DEBUG == 12
+    imageStore(uOutColor, px, vec4(vec3(length(worldPos - lights[0].positionRange.xyz) / 5.0), 1.0));
+    return;
+#elif R2_LIGHT_DEBUG == 13
+    imageStore(uOutColor, px, vec4(worldPos * 0.1 + 0.5, 1.0));
+    return;
+#elif R2_LIGHT_DEBUG == 15
+    {
+        // Self-test: invViewProjection * viewProjection must be the identity.
+        vec4 p = g.invViewProjection * (g.viewProjection * vec4(1.0, 2.0, 3.0, 1.0));
+        imageStore(uOutColor, px, vec4(p.xyz / max(p.w, 1e-6) * 0.1 + 0.5, 1.0));
+        return;
+    }
+#elif R2_LIGHT_DEBUG == 14
+    {
+        // Round trip: world -> clip -> uv. Should reproduce `uv` exactly.
+        vec4 c = g.viewProjection * vec4(worldPos, 1.0);
+        imageStore(uOutColor, px, vec4(c.xy / c.w * 0.5 + 0.5, 0.0, 1.0));
+        return;
+    }
+#endif
+#endif
+
+    imageStore(uOutColor, px, vec4(color, 1.0));
+}
