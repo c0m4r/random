@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Room3D</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<canvas id="screen" width="960" height="540"></canvas>
+
+<div id="hud">
+  <div id="stats">fps -- &middot; ms -- &middot; shots 0 &middot; hits 0</div>
+
+  <div id="crosshair">
+    <i class="tick up"></i><i class="tick down"></i><i class="tick left"></i><i class="tick right"></i>
+    <i class="dot"></i>
+  </div>
+
+  <div id="hitmarker"><i></i><i></i><i></i><i></i></div>
+
+  <div id="ammo"></div>
+  <div id="hint"></div>
+</div>
+
+<div id="overlay">
+  <div id="panel">
+    <h1 id="overlay-title">CONNECTING&hellip;</h1>
+    <p id="overlay-sub">connecting to renderer</p>
+    <ul id="controls">
+      <li><b>MOUSE</b><span>Look</span></li>
+      <li><b>W A S D</b><span>Move</span></li>
+      <li><b>SHIFT</b><span>Sprint</span></li>
+      <li><b>SPACE</b><span>Jump</span></li>
+      <li><b>E</b><span>Interact</span></li>
+      <li><b>LMB</b><span>Fire</span></li>
+      <li><b>RMB / Q</b><span>Draw &middot; holster</span></li>
+      <li><b>R</b><span>Reload</span></li>
+      <li><b>F</b><span>Reset scene</span></li>
+      <li><b>ARROWS</b><span>Look</span></li>
+      <li><b>ESC</b><span>Release cursor</span></li>
+    </ul>
+  </div>
+</div>
+
+<script src="/app.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,278 @@
+/* Room3D client — HUD / overlay styling. No external assets, no @import, no webfonts. */
+
+:root {
+  --fg: #e2e9f4;
+  --dim: rgba(226, 233, 244, 0.55);
+  --faint: rgba(226, 233, 244, 0.16);
+  --line: rgba(226, 233, 244, 0.13);
+  --accent: #9fd0ff;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: #000;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--mono);
+  color: var(--fg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: none;
+}
+
+body.locked { cursor: none; }
+
+/* ---------------------------------------------------------------- canvas */
+
+/* Frames arrive at the server's render resolution; the backing store is left
+   alone and CSS scales it up to the letterboxed size computed in app.js. */
+#screen {
+  display: block;
+  flex: 0 0 auto;
+  background: #000;
+  image-rendering: auto;
+}
+
+/* ------------------------------------------------------------------- HUD */
+
+#hud {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 160ms ease-out;
+}
+
+#hud.idle { opacity: 0.22; }
+
+/* Crosshair: a 0x0 anchor at the exact centre, ticks offset by --gap. */
+#crosshair {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+  --gap: 7px;
+  --tick: 9px;
+  --thick: 2px;
+}
+
+#crosshair .tick {
+  position: absolute;
+  left: 0;
+  top: 0;
+  background: #ffffff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55), 0 0 4px rgba(0, 0, 0, 0.95);
+}
+
+#crosshair .tick.up,
+#crosshair .tick.down {
+  width: var(--thick);
+  height: var(--tick);
+}
+
+#crosshair .tick.left,
+#crosshair .tick.right {
+  width: var(--tick);
+  height: var(--thick);
+}
+
+/* inner edge of every tick sits exactly --gap away from the centre */
+#crosshair .tick.up    { transform: translate(calc(var(--thick) / -2), calc(-1 * (var(--gap) + var(--tick)))); }
+#crosshair .tick.down  { transform: translate(calc(var(--thick) / -2), var(--gap)); }
+#crosshair .tick.left  { transform: translate(calc(-1 * (var(--gap) + var(--tick))), calc(var(--thick) / -2)); }
+#crosshair .tick.right { transform: translate(var(--gap), calc(var(--thick) / -2)); }
+
+#crosshair .dot {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.92);
+  transform: translate(-1.5px, -1.5px);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5), 0 0 3px rgba(0, 0, 0, 0.9);
+}
+
+/* Hitmarker: four diagonal slashes, flashed by app.js on the `hit` event. */
+#hitmarker {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+  opacity: 0;
+}
+
+#hitmarker i {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 9px;
+  height: 2px;
+  background: #ff6b6b;
+  box-shadow: 0 0 3px rgba(0, 0, 0, 0.9);
+  /* rotate about the exact centre; translate happens in the local (pre-rotation)
+     frame, so each slash sits symmetrically on a diagonal of the crosshair */
+  transform-origin: 0 0;
+}
+
+#hitmarker i:nth-child(1) { transform: rotate(-45deg) translate(5px, -1px); }   /* upper right */
+#hitmarker i:nth-child(2) { transform: rotate(-45deg) translate(-14px, -1px); } /* lower left  */
+#hitmarker i:nth-child(3) { transform: rotate(45deg) translate(-14px, -1px); }  /* upper left  */
+#hitmarker i:nth-child(4) { transform: rotate(45deg) translate(5px, -1px); }    /* lower right */
+
+#hitmarker.on { animation: hitmarker 220ms ease-out; }
+
+@keyframes hitmarker {
+  0%   { opacity: 0; transform: scale(0.65); }
+  20%  { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1.25); }
+}
+
+/* Stats / ammo / hint lines */
+#stats {
+  position: absolute;
+  left: 14px;
+  top: 12px;
+  font-size: 11px;
+  line-height: 1.4;
+  letter-spacing: 0.07em;
+  color: var(--dim);
+  white-space: nowrap;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.95);
+}
+
+#ammo {
+  position: absolute;
+  left: 50%;
+  bottom: 46px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 14px;
+}
+
+#ammo .pip {
+  width: 5px;
+  height: 13px;
+  border-radius: 1px;
+  background: var(--accent);
+  box-shadow: 0 0 5px rgba(159, 208, 255, 0.35), 0 1px 2px rgba(0, 0, 0, 0.9);
+  transition: background 90ms linear, box-shadow 90ms linear;
+}
+
+#ammo .pip.off {
+  background: var(--faint);
+  box-shadow: none;
+}
+
+#ammo .count {
+  margin-left: 8px;
+  font-size: 11px;
+  letter-spacing: 0.09em;
+  color: var(--dim);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.95);
+}
+
+#hint {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  max-width: min(76vw, 680px);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  color: rgba(226, 233, 244, 0.82);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.95);
+}
+
+#hint:empty { display: none; }
+
+/* --------------------------------------------------------------- overlay */
+
+#overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(ellipse at center, rgba(6, 9, 14, 0.62) 0%, rgba(0, 0, 0, 0.86) 72%);
+}
+
+#overlay.hidden { display: none; }
+
+#panel {
+  width: min(92vw, 430px);
+  padding: 22px 26px 20px;
+  border: 1px solid var(--line);
+  background: rgba(5, 7, 11, 0.74);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.72), inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+}
+
+#overlay-title {
+  margin: 0 0 6px;
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: 0.3em;
+  color: #fff;
+  text-shadow: 0 0 20px rgba(159, 208, 255, 0.32);
+}
+
+#overlay:not(.ready) #overlay-title { animation: pulse 1.4s ease-in-out infinite; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.45; }
+}
+
+#overlay-sub {
+  margin: 0 0 16px;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+#overlay:not(.ready) #controls { opacity: 0.32; }
+
+#controls {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 104px 1fr;
+  gap: 7px 14px;
+  font-size: 12px;
+  letter-spacing: 0.05em;
+}
+
+#controls li { display: contents; }
+
+#controls b {
+  font-weight: 500;
+  color: var(--accent);
+  letter-spacing: 0.09em;
+}
+
+#controls span { color: rgba(226, 233, 244, 0.78); }

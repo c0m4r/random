@@ -1,0 +1,4 @@
+# Build artifacts and local caches
+/bin/
+/.gocache/
+/room3d
